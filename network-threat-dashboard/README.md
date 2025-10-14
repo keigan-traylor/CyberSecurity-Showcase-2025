@@ -1,8 +1,8 @@
-# Network Threat Dashboard (Simulated)
+# Network Threat Dashboard (Simulation)
 
-**Purpose:** Parse mock network logs, detect suspicious indicators (failed logins spikes, unusual ports), and produce a summary CSV and PNG chart for visualization.
+**Purpose:** Parse mock logs, detect suspicious indicators (failed logins spikes, unusual ports), and produce a summary CSV and chart for visualization.
 
-**Concepts Demonstrated:**
+**High-level Concepts Demonstrated:**
 - Log parsing and enrichment with Pandas
 - Threat detection heuristics (failed login spikes, high request rate)
 - Clear reporting for SOC/analyst review
