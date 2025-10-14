@@ -2,7 +2,7 @@
 
 **Purpose:** Analyze AWS IAM policy JSON files for overly-permissive statements and produce remediation suggestions.
 
-**Concepts Demonstrated:**
+**High-level Concepts Demonstrated:**
 - Cloud security and least privilege
 - Parsing and analyzing IAM JSON documents
 - Generating remediation suggestions and policies
