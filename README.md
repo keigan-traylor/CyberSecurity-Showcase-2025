@@ -10,4 +10,4 @@ Contents:
 5. anomaly-ml-detector/ - Unsupervised ML anomaly detection on mock telemetry (IsolationForest)
 6. clientside-xss-scanner/ - Comprehensive vulnerability scanner that intelligently tests for client-side injection flaws across HTML, attribute, and URL reflection vectors using adaptive payloads and sophisticated DOM analysis
 
-Each project is completely safe to run locally (so no external network calls) and includes sample data. **These scripts are intentionally high-level for demonstration purposes only** Use the supplied `README.md` in each directory to run the prepared local examples.
+Each project is completely safe to run locally and includes sample data. **These scripts are intentionally high-level for demonstration purposes only** Use the supplied `README.md` in each directory to run the prepared local examples.
