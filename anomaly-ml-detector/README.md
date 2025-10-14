@@ -2,7 +2,7 @@
 
 **Purpose:** Demonstrate unsupervised anomaly detection on mock telemetry using `IsolationForest`. This project showcases feature engineering, model training, and inference for security analytics.
 
-**Concepts Demonstrated:**
+**High-level Concepts Demonstrated:**
 - Data preprocessing with Pandas
 - Unsupervised ML for anomaly detection (IsolationForest)
 - Exporting model and flagged results for analyst review
