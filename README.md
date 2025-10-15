@@ -1,6 +1,6 @@
 # Cybersecurity Showcase Repository
 
-This repository contains **five high-level Python projects** designed to demonstrate fundamental cybersecurity, infrastructure, and data-engineering capabilities. Each project is self-contained including an attached .README doc explaining purpose, applicable concepts, usage, and how it relates to real-world defensive practices. I have also attached one, more sophisticated, JavaScript vulnerability scanner utilizing real modern attack vectors and IOC's. It is presented as a .txt file due to its offensive security capabilities. 
+This repository contains **five high-level Python projects** designed to demonstrate fundamental cybersecurity, infrastructure, and data-engineering capabilities. Each project is self-contained including an attached .README doc explaining purpose, applicable concepts, usage, and how it relates to real-world defensive practices. I have also attached one, more sophisticated, JavaScript vulnerability scanner utilizing real modern attack vectors and IOC's.
 
 Contents:
 1. iam-policy-analyzer/ - Simulated AWS IAM policy analyzer (checks for obvious overly permissive policies)
