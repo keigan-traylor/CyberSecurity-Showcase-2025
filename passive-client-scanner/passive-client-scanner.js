@@ -1,230 +1,489 @@
-/**
- * passive-client-scanner.js
- *
- * Safe, passive client-side vulnerability pattern scanner.
- * - Read-only inspection of the DOM (no payloads, no DOM mutation)
- * - Static analysis helpers for HTML/JS strings (no network activity)
- * - Produces a JSON-style report of suspicious patterns (innerHTML, eval, inline scripts, inline events, javascript: URIs)
- *
- * Usage (Browser console):
- *   1) Open a safe, authorized test page (local file or dev server).
- *   2) Open DevTools -> Console and paste this script or include it as a dev-only script.
- *   3) Run: PassiveClientScanner.scanDom()  // returns array of findings
- *
- * Usage (Node.js - analyze a file string):
- *   const PassiveClientScanner = require('./passive-client-scanner');
- *   const fs = require('fs');
- *   const html = fs.readFileSync('sample.html','utf8');
- *   const report = PassiveClientScanner.scanHtmlString(html);
- *   console.log(report);
- */
+(function() {
+    'use strict';
 
-(function (global) {
-  'use strict';
+    // ===== OPTIMIZED CONFIGURATION =====
+    const CONFIG = {
+        SCRIPT_VERSION: 'XSS-73THv6 "Phoenix-OPTIMIZED"',
+        MAX_ERROR_BUDGET: 50,
+        STEALTH_DELAY: [50, 150], // Reduced delays
+        PHASE_TIMEOUT: 15000, // 15 seconds max per phase
+        MAX_ELEMENTS_PER_PHASE: 100,
+        BATCH_SIZE: 10,
+        INTELLIGENT_RETRY: true
+    };
 
-  const SEVERITY = { INFO: 'INFO', WARNING: 'WARNING', HIGH: 'HIGH' };
+    let findings = [];
+    let successFlag = '__XSS73TH_SUCCESS';
+    let scanAborted = false;
 
-  function excerpt(s, len = 140) {
-    if (!s) return '';
-    return s.length <= len ? s : (s.slice(0, len) + '...');
-  }
+    const log = (message, isFinding = false) => {
+        const style = isFinding ? 'color: #ff6b6b; font-weight: bold;' : 'color: #4ecdc4;';
+        console.log(`%c[XSS-OPTIMIZED] ${message}`, style);
+        if (isFinding) findings.push(message);
+    };
 
-  function detectHtmlPatterns(htmlText) {
-    const findings = [];
-    if (!htmlText || typeof htmlText !== 'string') return findings;
+    // ===== ABORT CONTROLLER =====
+    class ScanController {
+        constructor() {
+            this.abortController = new AbortController();
+            this.phaseTimeouts = new Map();
+        }
 
-    // Inline <script> blocks without src
-    const inlineScriptRegex = /<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
-    let m;
-    while ((m = inlineScriptRegex.exec(htmlText)) !== null) {
-      findings.push({
-        type: 'InlineScript',
-        severity: SEVERITY.HIGH,
-        excerpt: excerpt(m[0]),
-        explanation: 'Inline <script> blocks can increase XSS risk if they operate on untrusted input.'
-      });
+        get signal() {
+            return this.abortController.signal;
+        }
+
+        abort() {
+            scanAborted = true;
+            this.abortController.abort();
+            this.phaseTimeouts.forEach(timeout => clearTimeout(timeout));
+            log('Scan aborted by user');
+        }
+
+        setTimeout(phaseName, callback) {
+            const timeout = setTimeout(() => {
+                if (!scanAborted) {
+                    log(`Phase ${phaseName} timeout reached - moving to next phase`);
+                    callback();
+                }
+            }, CONFIG.PHASE_TIMEOUT);
+            this.phaseTimeouts.set(phaseName, timeout);
+        }
+
+        clearTimeout(phaseName) {
+            const timeout = this.phaseTimeouts.get(phaseName);
+            if (timeout) {
+                clearTimeout(timeout);
+                this.phaseTimeouts.delete(phaseName);
+            }
+        }
     }
 
-    // innerHTML usage
-    const innerHTMLRegex = /innerHTML\s*=|\.innerHTML\s*=|innerHTML\s*\+/gi;
-    if (innerHTMLRegex.test(htmlText)) {
-      findings.push({
-        type: 'innerHTMLUsage',
-        severity: SEVERITY.HIGH,
-        excerpt: 'innerHTML assignment detected',
-        explanation: 'Assigning HTML via innerHTML can introduce XSS if the content is not sanitized.'
-      });
-    }
+    // ===== OPTIMIZED PAYLOAD ENGINE =====
+    class OptimizedPayloadEngine {
+        constructor() {
+            this.successHistory = new Map();
+            this.contextWeights = new Map();
+            this.initializeWeights();
+        }
 
-    // document.write
-    const docWriteRegex = /document\.write|document\.writeln/gi;
-    if (docWriteRegex.test(htmlText)) {
-      findings.push({
-        type: 'documentWrite',
-        severity: SEVERITY.WARNING,
-        excerpt: 'document.write usage detected',
-        explanation: 'document.write may produce injection points; prefer safer APIs.'
-      });
-    }
+        initializeWeights() {
+            this.contextWeights.set('innerHTML', 0.9);
+            this.contextWeights.set('outerHTML', 0.8);
+            this.contextWeights.set('document.write', 0.7);
+            this.contextWeights.set('eval', 0.6);
+            this.contextWeights.set('attribute', 0.5);
+        }
 
-    // inline event handlers like onclick="..."
-    const inlineEventRegex = /\son[a-z]+\s*=\s*['"][^'"]+['"]/gi;
-    while ((m = inlineEventRegex.exec(htmlText)) !== null) {
-      findings.push({
-        type: 'InlineEventHandler',
-        severity: SEVERITY.WARNING,
-        excerpt: excerpt(m[0], 120),
-        explanation: 'Inline event handlers can contain dynamic code; prefer addEventListener and avoid inline JS.'
-      });
-    }
-
-    // javascript: URIs
-    const jsUriRegex = /(href|src)\s*=\s*['"]\s*javascript:/gi;
-    if (jsUriRegex.test(htmlText)) {
-      findings.push({
-        type: 'javascriptURI',
-        severity: SEVERITY.HIGH,
-        excerpt: 'javascript: URI detected',
-        explanation: 'javascript: URIs execute code and are high risk.'
-      });
-    }
-
-    return findings;
-  }
-
-  function detectJsPatterns(jsText) {
-    const findings = [];
-    if (!jsText || typeof jsText !== 'string') return findings;
-
-    // eval usage
-    const evalRegex = /\beval\s*\(/gi;
-    if (evalRegex.test(jsText)) {
-      findings.push({
-        type: 'evalUsage',
-        severity: SEVERITY.HIGH,
-        excerpt: 'eval() usage found',
-        explanation: 'eval() executes strings as code and is dangerous.'
-      });
-    }
-
-    // Function constructor
-    const funcCtorRegex = /new\s+Function\s*\(/gi;
-    if (funcCtorRegex.test(jsText)) {
-      findings.push({
-        type: 'FunctionConstructor',
-        severity: SEVERITY.HIGH,
-        excerpt: 'Function constructor usage detected',
-        explanation: 'Function constructor executes string code; avoid.'
-      });
-    }
-
-    // innerHTML in JS text
-    const innerHTMLRegex = /innerHTML\s*=|\.innerHTML\s*=|innerHTML\s*\+/gi;
-    if (innerHTMLRegex.test(jsText)) {
-      findings.push({
-        type: 'innerHTMLInJs',
-        severity: SEVERITY.HIGH,
-        excerpt: 'innerHTML assignment in JS',
-        explanation: 'Assigning to innerHTML in scripts is risky without sanitization.'
-      });
-    }
-
-    // simple SQL-like heuristics
-    const sqlLikeRegex = /\b(SELECT|INSERT|UPDATE|DELETE)\b\s+.+\bFROM\b/gi;
-    if (sqlLikeRegex.test(jsText)) {
-      findings.push({
-        type: 'SqlLikeString',
-        severity: SEVERITY.WARNING,
-        excerpt: excerpt(jsText.match(sqlLikeRegex)[0] || '', 140),
-        explanation: 'SQL-like strings may indicate client-side concatenation of queries; parameterize server-side.'
-      });
-    }
-
-    return findings;
-  }
-
-  function inspectDomReadOnly() {
-    const findings = [];
-    try {
-      // Inline scripts in DOM
-      const inlineScripts = Array.from(document.querySelectorAll('script:not([src])'));
-      inlineScripts.forEach(s => {
-        findings.push({
-          type: 'InlineScript_DOM',
-          severity: SEVERITY.HIGH,
-          excerpt: excerpt(s.textContent, 200),
-          explanation: 'Inline script element found in DOM.'
-        });
-      });
-
-      // Inline event handler attributes
-      const all = Array.from(document.querySelectorAll('*'));
-      all.forEach(el => {
-        for (let i = 0; i < el.attributes.length; i++) {
-          const attr = el.attributes[i];
-          if (/^on[a-z]+$/i.test(attr.name)) {
-            findings.push({
-              type: 'InlineEvent_DOM',
-              severity: SEVERITY.WARNING,
-              excerpt: `${el.tagName}[${attr.name}]=${excerpt(attr.value,120)}`,
-              explanation: 'Element has inline event handler attribute.'
+        getOptimizedPayloads(context) {
+            const basePayloads = this.getBasePayloads();
+            const contextPayloads = basePayloads[context] || basePayloads.HTML_CONTEXT;
+            
+            return contextPayloads.sort((a, b) => {
+                const aSuccess = this.successHistory.get(a.payload) || 0;
+                const bSuccess = this.successHistory.get(b.payload) || 0;
+                return bSuccess - aSuccess;
             });
-          }
         }
-      });
 
-      // javascript: hrefs
-      const anchors = Array.from(document.querySelectorAll('a[href]'));
-      anchors.forEach(a => {
-        const v = (a.getAttribute('href') || '').trim().toLowerCase();
-        if (v.startsWith('javascript:')) {
-          findings.push({
-            type: 'JavascriptHref_DOM',
-            severity: SEVERITY.HIGH,
-            excerpt: excerpt(a.outerHTML, 200),
-            explanation: 'Found anchor with javascript: href.'
-          });
+        getBasePayloads() {
+            return {
+                HTML_CONTEXT: [
+                    { payload: `<img src=x onerror="window.${successFlag}=1">`, weight: 0.95 },
+                    { payload: `<svg onload="window.${successFlag}=1">`, weight: 0.9 },
+                    { payload: `<iframe srcdoc="<img src=x onerror='top.${successFlag}=1'>">`, weight: 0.85 },
+                    { payload: `<div data-xss="</div><script>window.${successFlag}=1</script>">`, weight: 0.8 }
+                ],
+                ATTRIBUTE_CONTEXT: [
+                    { payload: `" onfocus="window.${successFlag}=1" autofocus="`, weight: 0.9 },
+                    { payload: `' onmouseenter="window.${successFlag}=1" '`, weight: 0.85 },
+                    { payload: `" onload="window.${successFlag}=1" `, weight: 0.8 },
+                    { payload: `javascript:window.${successFlag}=1`, weight: 0.7 }
+                ]
+            };
         }
-      });
 
-      // data: images info
-      const imgs = Array.from(document.querySelectorAll('img[src]'));
-      imgs.forEach(img => {
-        const src = (img.getAttribute('src') || '').trim().toLowerCase();
-        if (src.startsWith('data:')) {
-          findings.push({
-            type: 'DataUriImage',
-            severity: SEVERITY.INFO,
-            excerpt: excerpt(img.outerHTML, 200),
-            explanation: 'Image uses data: URI — review if user-controlled.'
-          });
+        recordSuccess(payload) {
+            const current = this.successHistory.get(payload) || 0;
+            this.successHistory.set(payload, current + 1);
         }
-      });
-
-    } catch (e) {
-      findings.push({ type: 'InspectError', severity: SEVERITY.INFO, excerpt: String(e), explanation: 'DOM inspection may have failed (cross-origin frames).' });
     }
-    return findings;
-  }
 
-  const PassiveClientScanner = {
-    scanHtmlString: function (html) {
-      return detectHtmlPatterns(html).concat(detectJsPatterns(html));
-    },
-    scanJsString: function (js) {
-      return detectJsPatterns(js);
-    },
-    scanDom: function () {
-      if (typeof document === 'undefined') throw new Error('scanDom requires a browser environment');
-      return inspectDomReadOnly();
-    },
-    severityLevels: SEVERITY
-  };
+    // ===== OPTIMIZED STEALTH ENGINE =====
+    class OptimizedStealthEngine {
+        constructor() {
+            this.requestCount = 0;
+            this.lastRequestTime = 0;
+        }
 
-  if (typeof module !== 'undefined' && typeof module.exports !== 'undefined') {
-    module.exports = PassiveClientScanner;
-  } else {
-    global.PassiveClientScanner = PassiveClientScanner;
-  }
+        async randomDelay() {
+            const delay = CONFIG.STEALTH_DELAY[0] + 
+                         Math.random() * (CONFIG.STEALTH_DELAY[1] - CONFIG.STEALTH_DELAY[0]);
+            return new Promise(resolve => setTimeout(resolve, delay));
+        }
 
-})(typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : this));
+        async throttleRequests() {
+            const now = Date.now();
+            if (now - this.lastRequestTime < 50) { // Reduced from 100ms
+                await this.randomDelay();
+            }
+            this.lastRequestTime = now;
+            this.requestCount++;
+        }
+
+        async batchDelay() {
+            // Only delay between batches, not individual operations
+            await this.randomDelay();
+        }
+    }
+
+    // ===== INTELLIGENT ELEMENT SELECTOR =====
+    class IntelligentElementSelector {
+        static getRelevantElements() {
+            const selectors = [
+                // High-value targets
+                'input[type="text"]',
+                'input[type="search"]',
+                'input[type="url"]',
+                'input[type="email"]',
+                'textarea',
+                '[contenteditable="true"]',
+                
+                // Form elements
+                'input:not([type])',
+                'select',
+                
+                // Elements with common framework bindings
+                '[data-bind]',
+                '[data-model]',
+                '[ng-model]',
+                '[v-model]',
+                
+                // Elements with user content
+                '[data-content]',
+                '[data-text]'
+            ];
+
+            const elements = new Set();
+            
+            // Use sampling for large DOMs
+            selectors.forEach(selector => {
+                try {
+                    const found = document.querySelectorAll(selector);
+                    const maxPerSelector = Math.ceil(CONFIG.MAX_ELEMENTS_PER_PHASE / selectors.length);
+                    
+                    if (found.length <= maxPerSelector) {
+                        found.forEach(el => elements.add(el));
+                    } else {
+                        // Sample if too many elements
+                        for (let i = 0; i < maxPerSelector; i++) {
+                            const randomIndex = Math.floor(Math.random() * found.length);
+                            elements.add(found[randomIndex]);
+                        }
+                    }
+                } catch (e) {
+                    // Skip invalid selectors
+                }
+            });
+
+            const elementArray = Array.from(elements);
+            
+            // Prioritize visible elements
+            elementArray.sort((a, b) => {
+                const aVisible = this.isElementVisible(a);
+                const bVisible = this.isElementVisible(b);
+                if (aVisible && !bVisible) return -1;
+                if (!aVisible && bVisible) return 1;
+                return 0;
+            });
+
+            return elementArray.slice(0, CONFIG.MAX_ELEMENTS_PER_PHASE);
+        }
+
+        static isElementVisible(element) {
+            const style = window.getComputedStyle(element);
+            return style.display !== 'none' && 
+                   style.visibility !== 'hidden' && 
+                   style.opacity !== '0' &&
+                   element.offsetWidth > 0 && 
+                   element.offsetHeight > 0;
+        }
+
+        static getRelevantAttributes(element) {
+            const tagName = element.tagName.toLowerCase();
+            const baseAttributes = ['value', 'title', 'placeholder', 'alt', 'data-custom'];
+            
+            const tagSpecific = {
+                'input': ['value', 'placeholder', 'title', 'data-*'],
+                'textarea': ['value', 'placeholder', 'title'],
+                'img': ['src', 'alt', 'title'],
+                'a': ['href', 'title'],
+                'div': ['title', 'data-*', 'aria-*'],
+                'span': ['title', 'data-*']
+            };
+
+            return tagSpecific[tagName] || baseAttributes;
+        }
+    }
+
+    // ===== OPTIMIZED TESTING PHASES =====
+    class OptimizedTestingPhases {
+        constructor(payloadEngine, stealthEngine, scanController) {
+            this.payloadEngine = payloadEngine;
+            this.stealth = stealthEngine;
+            this.scanController = scanController;
+        }
+
+        async testDirectInjection() {
+            log('Testing direct HTML injection vectors...');
+            
+            this.scanController.setTimeout('direct_injection', () => {
+                throw new Error('Direct injection phase timeout');
+            });
+
+            try {
+                const payloads = this.payloadEngine.getOptimizedPayloads('HTML_CONTEXT');
+                
+                for (const { payload } of payloads) {
+                    if (this.scanController.signal.aborted) return;
+                    
+                    await this.stealth.throttleRequests();
+                    
+                    try {
+                        const container = document.createElement('div');
+                        container.style.cssText = 'display: none !important; position: absolute !important; left: -9999px !important;';
+                        document.body.appendChild(container);
+                        
+                        // Test injection methods
+                        container.innerHTML = payload;
+                        await this.stealth.randomDelay();
+                        
+                        if (window[successFlag]) {
+                            log(`*** XSS CONFIRMED via innerHTML: ${payload.substring(0, 50)}...`, true);
+                            this.payloadEngine.recordSuccess(payload);
+                            delete window[successFlag];
+                        }
+                        
+                        // Test outerHTML
+                        container.outerHTML = payload;
+                        await this.stealth.randomDelay();
+                        
+                        if (window[successFlag]) {
+                            log(`*** XSS CONFIRMED via outerHTML: ${payload.substring(0, 50)}...`, true);
+                            this.payloadEngine.recordSuccess(payload);
+                            delete window[successFlag];
+                        }
+                        
+                        // Cleanup
+                        if (container.parentNode) {
+                            container.parentNode.removeChild(container);
+                        }
+                    } catch (error) {
+                        // Expected for some payloads
+                    }
+                }
+            } finally {
+                this.scanController.clearTimeout('direct_injection');
+            }
+        }
+
+        async testDynamicAttributes() {
+            log('Testing dynamic attribute injection...');
+            
+            this.scanController.setTimeout('attribute_injection', () => {
+                throw new Error('Attribute injection phase timeout');
+            });
+
+            try {
+                const elements = IntelligentElementSelector.getRelevantElements();
+                log(`Testing ${elements.length} relevant elements (optimized selection)`);
+                
+                if (elements.length === 0) {
+                    log('No relevant elements found for attribute testing');
+                    return;
+                }
+
+                const payloads = this.payloadEngine.getOptimizedPayloads('ATTRIBUTE_CONTEXT');
+                let processed = 0;
+
+                // Process in batches
+                for (let i = 0; i < elements.length; i += CONFIG.BATCH_SIZE) {
+                    if (this.scanController.signal.aborted) return;
+                    
+                    const batch = elements.slice(i, i + CONFIG.BATCH_SIZE);
+                    
+                    // Process batch with minimal delays
+                    await Promise.all(batch.map(async (element) => {
+                        if (this.scanController.signal.aborted) return;
+                        
+                        await this.testSingleElementAttributes(element, payloads);
+                        processed++;
+                        
+                        // Progress reporting
+                        if (processed % 10 === 0) {
+                            log(`Attribute testing progress: ${processed}/${elements.length}`);
+                        }
+                    }));
+                    
+                    // Single delay between batches only
+                    await this.stealth.batchDelay();
+                }
+                
+                log(`Completed attribute testing on ${processed} elements`);
+            } finally {
+                this.scanController.clearTimeout('attribute_injection');
+            }
+        }
+
+        async testSingleElementAttributes(element, payloads) {
+            const attributes = IntelligentElementSelector.getRelevantAttributes(element);
+            
+            for (const { payload } of payloads.slice(0, 2)) {
+                if (this.scanController.signal.aborted) return;
+                
+                for (const attr of attributes) {
+                    if (this.scanController.signal.aborted) return;
+                    
+                    try {
+                        const original = element.getAttribute(attr);
+                        
+                        // Set payload
+                        element.setAttribute(attr, payload);
+                        
+                        // Trigger events (no delays between events)
+                        const events = ['focus', 'mouseover', 'click'];
+                        events.forEach(eventType => {
+                            element.dispatchEvent(new Event(eventType, { bubbles: true }));
+                        });
+                        
+                        // Single consolidated delay per attribute
+                        await this.stealth.randomDelay();
+                        
+                        if (window[successFlag]) {
+                            log(`*** XSS CONFIRMED via ${element.tagName}.${attr}`, true);
+                            this.payloadEngine.recordSuccess(payload);
+                            delete window[successFlag];
+                        }
+                        
+                        // Restore original value
+                        if (original !== null) {
+                            element.setAttribute(attr, original);
+                        } else {
+                            element.removeAttribute(attr);
+                        }
+                        
+                    } catch (error) {
+                        // Skip elements that throw errors
+                        break;
+                    }
+                }
+            }
+        }
+
+        async testURLReflection() {
+            log('Testing URL parameter reflection...');
+            
+            this.scanController.setTimeout('url_reflection', () => {
+                throw new Error('URL reflection phase timeout');
+            });
+
+            try {
+                const url = new URL(window.location.href);
+                const params = Array.from(url.searchParams.entries());
+                const payloads = this.payloadEngine.getOptimizedPayloads('HTML_CONTEXT');
+                const originalURL = window.location.href;
+
+                if (params.length === 0) {
+                    log('No URL parameters found to test');
+                    return;
+                }
+
+                for (const [key, originalValue] of params) {
+                    if (this.scanController.signal.aborted) return;
+                    
+                    for (const { payload } of payloads.slice(0, 2)) {
+                        if (this.scanController.signal.aborted) return;
+                        
+                        await this.stealth.throttleRequests();
+                        
+                        url.searchParams.set(key, payload);
+                        window.history.replaceState(null, '', url.toString());
+                        
+                        // Trigger potential execution contexts
+                        if (key === 'hash' || payload.includes('#')) {
+                            window.dispatchEvent(new Event('hashchange'));
+                        }
+                        
+                        window.dispatchEvent(new Event('popstate'));
+                        
+                        await this.stealth.randomDelay();
+                        
+                        if (window[successFlag]) {
+                            log(`*** XSS CONFIRMED via URL parameter: ${key}`, true);
+                            this.payloadEngine.recordSuccess(payload);
+                            delete window[successFlag];
+                        }
+                        
+                        // Restore immediately
+                        url.searchParams.set(key, originalValue);
+                    }
+                }
+                
+                // Final restore
+                window.history.replaceState(null, '', originalURL);
+            } finally {
+                this.scanController.clearTimeout('url_reflection');
+            }
+        }
+    }
+
+    // ===== OPTIMIZED MAIN EXECUTION CONTROLLER =====
+    const executeOptimizedScan = async () => {
+        log(`Initializing ${CONFIG.SCRIPT_VERSION} - Optimized XSS Scanner`);
+        
+        const scanController = new ScanController();
+        const payloadEngine = new OptimizedPayloadEngine();
+        const stealthEngine = new OptimizedStealthEngine();
+        const testingPhases = new OptimizedTestingPhases(payloadEngine, stealthEngine, scanController);
+
+        // Global abort handler
+        window.__XSS_ABORT = () => scanController.abort();
+
+        try {
+            await testingPhases.testDirectInjection();
+            if (scanController.signal.aborted) return;
+            
+            await testingPhases.testDynamicAttributes();
+            if (scanController.signal.aborted) return;
+            
+            await testingPhases.testURLReflection();
+
+            // Final report
+            log('=== OPTIMIZED SCAN COMPLETE ===');
+            log(`Total Vulnerabilities Found: ${findings.length}`);
+            log(`Scan Status: ${scanAborted ? 'ABORTED' : 'COMPLETED'}`);
+            
+            if (findings.length > 0) {
+                log('=== VULNERABILITY REPORT ===', true);
+                findings.forEach((finding, index) => {
+                    log(`${index + 1}. ${finding}`, true);
+                });
+            }
+
+        } catch (error) {
+            if (!scanAborted) {
+                log(`Scan interrupted: ${error.message}`, false);
+            }
+        }
+    };
+
+    // Initialize with abort capability
+    const scanTimeout = setTimeout(executeOptimizedScan, 1000 + Math.random() * 2000);
+    
+    // Export abort function
+    window.__XSS_OPTIMIZED_ABORT = () => {
+        clearTimeout(scanTimeout);
+        scanAborted = true;
+        log('Scan aborted before start');
+    };
+})();
